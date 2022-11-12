@@ -269,10 +269,10 @@ static inline __attribute__((always_inline)) void e6821_set_irq(e6821_port_t por
  */
 static inline __attribute__((always_inline)) void SLEEP_WAIT_FOR_PAGE_CHANGE()
 {
-    /** 17 nops ~150ns */
+    /** 11 nops + 9 op cycles ~150ns */
     __asm volatile (
         "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\t"
     );
 }
 
@@ -430,21 +430,24 @@ reset:
     /** run clock cycles */
     for(;;)
     {
+        /** read first addr page and settings */
+        uint32_t v = gpio_get_all();
+        gpio_set_mask(1<<ADDR_PAGE_PIN); /** switch page ASAP */
         /** check message from core 0 */
-        if(sio_hw->fifo_st & SIO_FIFO_ST_VLD_BITS)
+        if(__builtin_expect(sio_hw->fifo_st & SIO_FIFO_ST_VLD_BITS,0))
         {
             uint32_t core0_data = sio_hw->fifo_rd;
-            if(__builtin_expect(core0_data & CORE1_HAS_DATA,0))
+            if(core0_data & CORE1_HAS_DATA)
             {
                 e6821_input_from_device(E6821_PORT_A,core0_data&CORE1_DATA_MASK);
                 e6821_set_irq(E6821_PORT_A,E6821_IRQ_LINE_1);
             }
-            if(__builtin_expect(core0_data & CORE1_HAS_ACK,0))
+            else
+            {
+                /** CORE1_HAS_ACK */
                 e6821_input_from_device(E6821_PORT_B,0x00);
+            }  
         }
-        /** read first addr page and settings */
-        uint32_t v = gpio_get_all();
-        gpio_set_mask(1<<ADDR_PAGE_PIN); /** switch page at once */
         /** check button */
         if(__builtin_expect(!(v&(1u<<BUTTON_PIN)),0))
             goto reset;
@@ -453,7 +456,7 @@ reset:
         uint32_t is_read = 0;
         addr = v & 0xFF;
         is_read = v & (1<<RW_PIN);
-        /** at least 3 cycles past since page switching */
+        /** at least 9 cycles past since page switching */
         /** wait for address page switching 74HC157@2V 145ns, @4.5V 29ns, @3.3V ?ns */
         SLEEP_WAIT_FOR_PAGE_CHANGE(); 
         /** read second addr page */   
