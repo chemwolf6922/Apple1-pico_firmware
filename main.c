@@ -264,6 +264,38 @@ static inline __attribute__((always_inline)) void e6821_set_irq(e6821_port_t por
     }
 }
 
+/**
+ * Simple (higher resolution) sleep function 
+ */
+static inline __attribute__((always_inline)) void SLEEP_WAIT_FOR_PAGE_CHANGE()
+{
+    /** 20 nops */
+    __asm volatile (
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+    );
+}
+
+static inline __attribute__((always_inline)) void SLEEP_HALF_CYCLE()
+{
+    /** 133 nops */
+    __asm volatile (
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\t"
+    );
+}
 
 /**
  * function pre define
@@ -385,18 +417,18 @@ reset:
         e6821_set_device_hook(E6821_PORT_B,terminal_putchar,NULL);
         /** RST -> low */
         gpio_put(RST_PIN,0);
-        sleep_us(HALF_CLK_CYCLE_US);
+        SLEEP_HALF_CYCLE();
         /** wait for at least 2 clock cycles */
         for(int i=0;i<3;i++)
         {
             gpio_put(CLK_PIN,1);
-            sleep_us(HALF_CLK_CYCLE_US);
+            SLEEP_HALF_CYCLE();
             gpio_put(CLK_PIN,0);
-            sleep_us(HALF_CLK_CYCLE_US);
+            SLEEP_HALF_CYCLE();
         }
         /** RST -> high */
         gpio_put(RST_PIN,1);
-        sleep_us(HALF_CLK_CYCLE_US);
+        SLEEP_HALF_CYCLE();
     }
     
     /** run clock cycles */
@@ -429,8 +461,8 @@ reset:
             gpio_put(ADDR_PAGE_PIN,1);  /** switch page at once */
             addr = v & 0xFF;
             is_read = (v & (1<<RW_PIN)) != 0;
-            /** @todo replace NOPs to achieve minimum delay */
-            sleep_us(1);    /** wait for address page switching, should be faster */
+            /** wait for address page switching 74HC157@2V 145ns, @4.5V 29ns, @3.3V ?ns */
+            SLEEP_WAIT_FOR_PAGE_CHANGE();    
             v = gpio_get_all();
             addr = addr | ((v&0xFF) << 8);
             gpio_put(ADDR_PAGE_PIN,0);  /** switch back address page */
@@ -451,7 +483,7 @@ reset:
         }
         /** send clk pos edge */
         gpio_put(CLK_PIN,1);
-        sleep_us(HALF_CLK_CYCLE_US);
+        SLEEP_HALF_CYCLE();
         /** handle memory write */
         if(!is_read)
         {
@@ -470,7 +502,7 @@ reset:
         }
         /** send clk neg edge */
         gpio_put(CLK_PIN,0);
-        sleep_us(HALF_CLK_CYCLE_US);
+        SLEEP_HALF_CYCLE();
     }
 }
 
