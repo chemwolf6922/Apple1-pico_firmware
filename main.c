@@ -269,10 +269,10 @@ static inline __attribute__((always_inline)) void e6821_set_irq(e6821_port_t por
  */
 static inline __attribute__((always_inline)) void SLEEP_WAIT_FOR_PAGE_CHANGE()
 {
-    /** 20 nops ~150ns */
+    /** 17 nops ~150ns */
     __asm volatile (
         "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
     );
 }
 
@@ -334,6 +334,7 @@ int __not_in_flash_func(main)()
         /** set address page to 0 */
         gpio_init(ADDR_PAGE_PIN);
         gpio_set_dir(ADDR_PAGE_PIN,true);
+        gpio_set_slew_rate(ADDR_PAGE_PIN,GPIO_SLEW_RATE_FAST);
         gpio_put(ADDR_PAGE_PIN,0);
         /** set button pin to input pull up */
         gpio_init(BUTTON_PIN);
@@ -397,6 +398,8 @@ static void __not_in_flash_func(memory_task)(void)
 reset:
     /** reset system */
     {
+        /** reset data pin to input */
+        gpio_set_dir_in_masked(DATA_PIN_MASK);
         /** reset memory */
         memset(memory,0,sizeof(memory));
         /** load ROM */
@@ -427,44 +430,40 @@ reset:
     /** run clock cycles */
     for(;;)
     {
-        /** reset data pin to input */
-        {
-            gpio_set_dir_in_masked(DATA_PIN_MASK);
-        }
         /** check message from core 0 */
         if(sio_hw->fifo_st & SIO_FIFO_ST_VLD_BITS)
         {
             uint32_t core0_data = sio_hw->fifo_rd;
-            if(core0_data & CORE1_HAS_DATA)
+            if(__builtin_expect(core0_data & CORE1_HAS_DATA,0))
             {
                 e6821_input_from_device(E6821_PORT_A,core0_data&CORE1_DATA_MASK);
                 e6821_set_irq(E6821_PORT_A,E6821_IRQ_LINE_1);
             }
-            if(core0_data & CORE1_HAS_ACK)
+            if(__builtin_expect(core0_data & CORE1_HAS_ACK,0))
                 e6821_input_from_device(E6821_PORT_B,0x00);
         }
+        /** read first addr page and settings */
+        uint32_t v = gpio_get_all();
+        gpio_set_mask(1<<ADDR_PAGE_PIN); /** switch page at once */
         /** check button */
-        if(gpio_get(BUTTON_PIN) == 0)
+        if(__builtin_expect(!(v&(1u<<BUTTON_PIN)),0))
             goto reset;
-        /** read address & r/w */
+        /** get address & r/w */
         uint16_t addr = 0;
-        bool is_read = false;
-        {
-            uint32_t v = gpio_get_all();
-            gpio_put(ADDR_PAGE_PIN,1);  /** switch page at once */
-            addr = v & 0xFF;
-            is_read = (v & (1<<RW_PIN)) != 0;
-            /** wait for address page switching 74HC157@2V 145ns, @4.5V 29ns, @3.3V ?ns */
-            SLEEP_WAIT_FOR_PAGE_CHANGE();    
-            v = gpio_get_all();
-            addr = addr | ((v&0xFF) << 8);
-            gpio_put(ADDR_PAGE_PIN,0);  /** switch back address page */
-        }
+        uint32_t is_read = 0;
+        addr = v & 0xFF;
+        is_read = v & (1<<RW_PIN);
+        /** at least 3 cycles past since page switching */
+        /** wait for address page switching 74HC157@2V 145ns, @4.5V 29ns, @3.3V ?ns */
+        SLEEP_WAIT_FOR_PAGE_CHANGE(); 
+        /** read second addr page */   
+        v = gpio_get_all();
+        addr = addr | ((v&0xFF) << 8);
         /** handle memory read */
         if(is_read)
         {
             gpio_set_dir_out_masked(DATA_PIN_MASK);
-            if((addr & 0xF000) == 0xD000)
+            if(__builtin_expect((addr & 0xF000) == 0xD000,0))
             {
                 /** PIA */
                 gpio_put_masked(DATA_PIN_MASK,((uint32_t)e6821_read(addr&0b11))<<8);
@@ -474,28 +473,33 @@ reset:
                 gpio_put_masked(DATA_PIN_MASK,((uint32_t)memory[addr])<<8);
             }
         }
+        /** put operations between data write and clk change for data to be valid */
+        /** switch back address page */
+        gpio_clr_mask(1<<ADDR_PAGE_PIN); 
         /** send clk pos edge */
-        gpio_put(CLK_PIN,1);
+        gpio_set_mask(1<<CLK_PIN);
         SLEEP_HALF_CYCLE();
         /** handle memory write */
-        if(!is_read)
+        if(is_read==0)
         {
-            uint32_t v = gpio_get_all();
+            v = gpio_get_all();
             uint8_t data = (v>>8) & 0xFF;
-            if((addr & 0xF000) == 0xD000)
+            if(__builtin_expect((addr & 0xF000) == 0xD000,0))
             {
                 /** PIA */
                 e6821_write(addr&0b11,data);
             }
-            else if(!(addr & 0x8000))
+            else if(__builtin_expect(addr < 0x8000,1))
             {
                 /** RAM */
                 memory[addr] = data;
             }
         }
         /** send clk neg edge */
-        gpio_put(CLK_PIN,0);
+        gpio_clr_mask(1<<CLK_PIN);
         SLEEP_HALF_CYCLE();
+        /** reset data pin to input */
+        gpio_set_dir_in_masked(DATA_PIN_MASK);
     }
 }
 
