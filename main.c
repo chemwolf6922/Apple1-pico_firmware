@@ -22,13 +22,7 @@
 /** data range from 8-15 */
 #define DATA_PIN_MASK (0x0000FF00)
 
-// #define DEBUG_MODE
-
-#ifdef DEBUG_MODE
-#define HALF_CLK_CYCLE_MS (250)
-#else
 #define HALF_CLK_CYCLE_MS (1)
-#endif
 
 
 static void terminal_putchar(uint8_t data ,void* ctx);
@@ -76,10 +70,6 @@ int main()
     // getchar();
     printf("6502 CPU starting...\n");
 reset:
-#ifdef DEBUG_MODE
-    /** to avoid multiple resets in debug mode */
-    sleep_ms(1000);
-#endif
     /** reset system */
     {
         /** reset memory */
@@ -144,9 +134,6 @@ reset:
             addr = addr | ((v&0xFF) << 8);
             gpio_put(ADDR_PAGE_PIN,0);  /** switch back address page */
         }
-#ifdef DEBUG_MODE
-        printf("Address:%04x,is_read:%d\n",addr,is_read);
-#endif
         /** handle memory read */
         if(is_read)
         {
@@ -169,9 +156,6 @@ reset:
         {
             uint32_t v = gpio_get_all();
             uint8_t data = (v>>8) & 0xFF;
-#ifdef DEBUG_MODE
-            printf("Write %02x to %04x\n",data,addr);
-#endif
             if((addr & 0xF000) == 0xD000)
             {
                 /** PIA */
@@ -195,11 +179,7 @@ static void terminal_putchar(uint8_t data ,void* ctx)
 {
     data &= 0x3F;
     int c = (data==0x0D)? '\n' :(data & 0x20)? data : data+0x40;
-#ifndef DEBUG_MODE
     printf("%c",c);
-#else
-    printf("Terminal: data:%02x, char:%c\n",data,c);
-#endif
     /** write back to inform the cpu */
     e6821_input_from_device(E6821_PORT_B,0x00);
 }
