@@ -22,7 +22,7 @@
 /** data range from 8-15 */
 #define DATA_PIN_MASK (0x0000FF00)
 
-#define HALF_CLK_CYCLE_MS (1)
+#define HALF_CLK_CYCLE_US (1)
 
 
 static void terminal_putchar(uint8_t data ,void* ctx);
@@ -85,18 +85,18 @@ reset:
         e6821_set_device_hook(E6821_PORT_B,terminal_putchar,NULL);
         /** RST -> low */
         gpio_put(RST_PIN,0);
-        sleep_ms(HALF_CLK_CYCLE_MS);
+        sleep_us(HALF_CLK_CYCLE_US);
         /** wait for at least 2 clock cycles */
         for(int i=0;i<3;i++)
         {
             gpio_put(CLK_PIN,1);
-            sleep_ms(HALF_CLK_CYCLE_MS);
+            sleep_us(HALF_CLK_CYCLE_US);
             gpio_put(CLK_PIN,0);
-            sleep_ms(HALF_CLK_CYCLE_MS);
+            sleep_us(HALF_CLK_CYCLE_US);
         }
         /** RST -> high */
         gpio_put(RST_PIN,1);
-        sleep_ms(HALF_CLK_CYCLE_MS);
+        sleep_us(HALF_CLK_CYCLE_US);
     }
     
     /** run clock cycles */
@@ -150,7 +150,7 @@ reset:
         }
         /** send clk pos edge */
         gpio_put(CLK_PIN,1);
-        sleep_ms(HALF_CLK_CYCLE_MS);
+        sleep_us(HALF_CLK_CYCLE_US);
         /** handle memory write */
         if(!is_read)
         {
@@ -169,7 +169,7 @@ reset:
         }
         /** send clk neg edge */
         gpio_put(CLK_PIN,0);
-        sleep_ms(HALF_CLK_CYCLE_MS);
+        sleep_us(HALF_CLK_CYCLE_US);
     }
 
     return 0;
