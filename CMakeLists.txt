@@ -19,12 +19,10 @@ pico_sdk_init()
 # Add executable
 add_executable(apple1_bus
         main.c
-        6821_emulator/e6821.c
         )
 
 target_include_directories(apple1_bus PRIVATE 
         .
-        ./6821_emulator
         )
 
 # enable usb output, disable uart output
@@ -34,6 +32,7 @@ pico_enable_stdio_uart(apple1_bus 0)
 # pull in common dependencies
 target_link_libraries(apple1_bus PUBLIC
         pico_stdlib 
+        pico_multicore
         )
 
 # create map/bin/hex file etc.

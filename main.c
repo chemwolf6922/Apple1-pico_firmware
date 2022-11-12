@@ -5,11 +5,13 @@
 #include "pico/stdlib.h"
 #include "6502ROM.h"
 #include "hardware/gpio.h"
-#include "e6821.h"
+#include "pico/multicore.h" 
 
 #define lengthof(x) sizeof(x)/sizeof(x[0])
 
-
+/**
+ * Hardware define
+ */
 #define RW_PIN (16)
 #define CLK_PIN (17)
 #define IRQ_PIN (18)
@@ -18,18 +20,265 @@
 #define ADDR_PAGE_PIN (21)
 #define BUTTON_PIN (22)
 /** address range from 0-7 */
-#define ADDR_PIN_MASK (0x000000FF)
+#define ADDR_PIN_MASK (0x000000FFu)
 /** data range from 8-15 */
-#define DATA_PIN_MASK (0x0000FF00)
+#define DATA_PIN_MASK (0x0000FF00u)
 
 #define HALF_CLK_CYCLE_US (1)
 
+/**
+ * Inter core messages
+ */
+#define CORE1_DATA_MASK     (0x000000FFu)
+#define CORE1_HAS_ACK       (0x00000100u)
+#define CORE1_HAS_DATA      (0x00000200u)
 
+/**
+ * 6821 fast implementation
+ */
+typedef enum
+{
+    E6821_PORT_A,
+    E6821_PORT_B
+} e6821_port_t;
+
+typedef enum
+{
+    E6821_IRQ_LINE_1,
+    E6821_IRQ_LINE_2
+} e6821_irq_line_t;
+
+typedef struct
+{
+    uint8_t data_A;
+    uint8_t direction_A;
+    uint8_t contorl_A;
+    uint8_t data_B;
+    uint8_t direction_B;
+    uint8_t contorl_B;
+} e6821_reg_dump_t;
+
+typedef void(*e6821_output_to_device_t)(uint8_t data ,void* ctx);
+
+/** 6821_fast implementation */
+typedef struct
+{
+    uint8_t data_A;
+    uint8_t direction_A;
+    union
+    {
+        struct {
+            uint8_t C1_enable:1;
+            uint8_t C1_edge:1;
+            uint8_t DDR_access:1;
+            uint8_t C2_b3:1;
+            uint8_t C2_b4:1;
+            uint8_t C2_output:1;
+            uint8_t IRQ2:1;
+            uint8_t IRQ1:1;
+        } __attribute__((packed)) bits;
+        uint8_t byte; 
+    } control_A;
+
+    uint8_t data_B;
+    uint8_t direction_B;
+    union
+    {
+        struct {
+            uint8_t C1_enable:1;
+            uint8_t C1_edge:1;
+            uint8_t DDR_access:1;
+            uint8_t C2_b3:1;
+            uint8_t C2_b4:1;
+            uint8_t C2_output:1;
+            uint8_t IRQ2:1;
+            uint8_t IRQ1:1;
+        } __attribute__((packed)) bits;
+        uint8_t byte; 
+    } control_B;
+
+    struct
+    {
+        e6821_output_to_device_t write_to_device_A;
+        void* ctx_A;
+        e6821_output_to_device_t write_to_device_B;
+        void* ctx_B;
+    } callbacks;
+} e6821_t;
+
+static e6821_t e6821 = {0};
+
+static inline __attribute__((always_inline)) void e6821_reset()
+{
+    memset(&e6821,0,sizeof(e6821));
+}
+
+static inline __attribute__((always_inline)) void e6821_set_device_hook(e6821_port_t port, e6821_output_to_device_t write_to_device, void* ctx)
+{
+    if(port == E6821_PORT_A)
+    {
+        e6821.callbacks.write_to_device_A = write_to_device;
+        e6821.callbacks.ctx_A = ctx;
+    }
+    else if(port == E6821_PORT_B)
+    {
+        e6821.callbacks.write_to_device_B = write_to_device;
+        e6821.callbacks.ctx_B = ctx;
+    }
+}
+
+/**
+ * @param rs bit1: rs1, bit0: rs0
+ * @param data data
+ */
+static inline __attribute__((always_inline)) void e6821_write(int rs, uint8_t data)
+{
+    switch (rs)
+    {
+    case 0b00:{
+        if(e6821.control_A.bits.DDR_access)
+        {
+            /** data A */
+            e6821.data_A = (data & e6821.direction_A) | (e6821.data_A & (~e6821.direction_A));
+            if(e6821.callbacks.write_to_device_A)
+            {
+                e6821.callbacks.write_to_device_A(data,e6821.callbacks.ctx_A);
+            }
+        }
+        else
+        {
+            /** data direction A, does not matter */
+            e6821.direction_A = data;
+        }
+    } break;
+    case 0b01:{
+        e6821.control_A.byte = data;
+    } break;
+    case 0b10:{
+        if(e6821.control_B.bits.DDR_access)
+        {
+            /** data B */
+            e6821.data_B = (data & e6821.direction_B) | (e6821.data_B & (~e6821.direction_B));
+            if(e6821.callbacks.write_to_device_B)
+            {
+                e6821.callbacks.write_to_device_B(data,e6821.callbacks.ctx_B);
+            }
+        }
+        else
+        {
+            /** data direction B, does not matter */
+            e6821.direction_B = data;
+        }
+    } break;
+    case 0b11:{
+        e6821.control_B.byte = data;
+    } break;
+    default:
+        break;
+    }
+}
+
+/**
+ * @param rs bit1: rs1, bit0: rs0
+ */
+static inline __attribute__((always_inline)) uint8_t e6821_read(int rs)
+{
+    switch (rs)
+    {
+    case 0b00:{
+        if(e6821.control_A.bits.DDR_access)
+        {
+            /** data A */
+            e6821.control_A.bits.IRQ1 = 0;
+            e6821.control_A.bits.IRQ2 = 0;
+            return e6821.data_A;
+        }
+        else
+        {
+            /** data direction A, does not matter */
+            return e6821.direction_A;
+        }
+    } break;
+    case 0b01:{
+        /** control A */
+        return e6821.control_A.byte;
+    } break;
+    case 0b10:{
+        if(e6821.control_B.bits.DDR_access)
+        {
+            /** data B */
+            e6821.control_B.bits.IRQ1 = 0;
+            e6821.control_B.bits.IRQ2 = 0;
+            return e6821.data_B;
+        }
+        else
+        {
+            /** data direction B, does not matter */
+            return e6821.direction_B;
+        }
+    } break;
+    case 0b11:{
+        /** control B */
+        return e6821.control_B.byte;
+    } break;
+    default:
+        break;
+    }
+}
+
+static inline __attribute__((always_inline)) void e6821_input_from_device(e6821_port_t port, uint8_t data)
+{
+    if(port == E6821_PORT_A)
+    {
+        e6821.data_A = (data & (~e6821.direction_A)) | (e6821.data_A & e6821.direction_A);
+    }
+    else if(port == E6821_PORT_B)
+    {
+        e6821.data_B = (data & (~e6821.direction_B)) | (e6821.data_B & e6821.direction_B);
+    }
+}
+
+static inline __attribute__((always_inline)) void e6821_set_irq(e6821_port_t port, e6821_irq_line_t line)
+{
+    if(port == E6821_PORT_A)
+    {
+        if(line == E6821_IRQ_LINE_1)
+        {
+            e6821.control_A.bits.IRQ1 = 1;
+        }
+        else if(line == E6821_IRQ_LINE_2 && (e6821.control_A.bits.C2_output==0))
+        {
+            e6821.control_A.bits.IRQ2 = 1;
+        }
+    }
+    else if(port == E6821_PORT_B)
+    {
+        if(line == E6821_IRQ_LINE_1)
+        {
+            e6821.control_B.bits.IRQ1 = 1;
+        }
+        else if(line == E6821_IRQ_LINE_2 && (e6821.control_B.bits.C2_output==0))
+        {
+            e6821.control_B.bits.IRQ2 = 1;
+        }
+    }
+}
+
+
+/**
+ * function pre define
+ */
 static void terminal_putchar(uint8_t data ,void* ctx);
+static void memory_task(void);
 
+/**
+ * memory
+ */
 static uint8_t memory[0x10000] = {0};
 
-int main()
+
+/** task running on core 0 */
+int __not_in_flash_func(main)()
 {
     stdio_init_all();
 
@@ -66,9 +315,60 @@ int main()
         gpio_set_dir(BUTTON_PIN,false);
         gpio_pull_up(BUTTON_PIN);
     }
-    /** wait for user input to keep going */
-    // getchar();
     printf("6502 CPU starting...\n");
+
+    /** start memory task on core 1 */
+    multicore_launch_core1(memory_task);
+    /** handle IO */
+    for(;;)
+    {
+        /** check message from core 1 (terminal output) */
+        bool has_ack = false;
+        if(sio_hw->fifo_st & SIO_FIFO_ST_VLD_BITS)
+        {
+            uint32_t core1_data =  sio_hw->fifo_rd;
+            core1_data &= 0x3F;
+            int c_out = (core1_data==0x0D)?'\n':(core1_data&0x20)?core1_data:core1_data+0x40;
+            printf("%c",c_out);
+            has_ack = true;
+        }
+        /** check stdin input */
+        int c_in = getchar_timeout_us(0);
+        if(c_in >= 0)
+        {
+            /** convert to higher case */
+            if(c_in>='a'&&c_in<='z')
+                c_in = c_in - ('a'-'A');
+            /** keyboard interface always set bit 7 to 1 */
+            c_in = c_in | 0x80;
+        }
+        /** send message to core 1 if any */
+        if(has_ack || (c_in >= 0))
+        {
+            /** has message to send */
+            uint32_t message = 0;
+            if(has_ack)
+                message |= CORE1_HAS_ACK;
+            if(c_in>=0)
+                message |= CORE1_HAS_DATA | (c_in & CORE1_DATA_MASK);
+            sio_hw->fifo_wr = message;
+            __asm volatile ("sev");
+        }
+    }
+
+    return 0;
+}
+
+
+
+/** 
+ * task running on core 1
+ *  - RAM
+ *  - ROM
+ *  - PIA logic
+ */
+static void __not_in_flash_func(memory_task)(void)
+{
 reset:
     /** reset system */
     {
@@ -102,20 +402,21 @@ reset:
     /** run clock cycles */
     for(;;)
     {
-        /** check stdin input */
-        int c = getchar_timeout_us(0);
-        if(c >= 0)
-        {
-            /** convert to higher case */
-            if(c>='a'&&c<='z')
-                c = c - ('a'-'A');
-            /** keyboard interface always set bit 7 to 1 */
-            e6821_input_from_device(E6821_PORT_A,0x80|c);
-            e6821_set_irq(E6821_PORT_A,E6821_IRQ_LINE_1);
-        }
         /** reset data pin to input */
         {
             gpio_set_dir_in_masked(DATA_PIN_MASK);
+        }
+        /** check message from core 0 */
+        if(sio_hw->fifo_st & SIO_FIFO_ST_VLD_BITS)
+        {
+            uint32_t core0_data = sio_hw->fifo_rd;
+            if(core0_data & CORE1_HAS_DATA)
+            {
+                e6821_input_from_device(E6821_PORT_A,core0_data&CORE1_DATA_MASK);
+                e6821_set_irq(E6821_PORT_A,E6821_IRQ_LINE_1);
+            }
+            if(core0_data & CORE1_HAS_ACK)
+                e6821_input_from_device(E6821_PORT_B,0x00);
         }
         /** check button */
         if(gpio_get(BUTTON_PIN) == 0)
@@ -171,15 +472,15 @@ reset:
         gpio_put(CLK_PIN,0);
         sleep_us(HALF_CLK_CYCLE_US);
     }
-
-    return 0;
 }
 
-static void terminal_putchar(uint8_t data ,void* ctx)
+/**
+ * Callback from core 1
+ */
+static void __not_in_flash_func(terminal_putchar)(uint8_t data ,void* ctx)
 {
-    data &= 0x3F;
-    int c = (data==0x0D)? '\n' :(data & 0x20)? data : data+0x40;
-    printf("%c",c);
-    /** write back to inform the cpu */
-    e6821_input_from_device(E6821_PORT_B,0x00);
+    /** send data to core 0 */
+    sio_hw->fifo_wr = (uint32_t)data;
+    __asm volatile ("sev");
 }
+
