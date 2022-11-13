@@ -365,24 +365,19 @@ static inline __attribute__((always_inline)) void e6821_set_irq(e6821_port_t por
  */
 static inline __attribute__((always_inline)) void SLEEP_WAIT_FOR_PAGE_CHANGE()
 {
-    /** 11 nops + 9 op cycles ~150ns */
+    /** 3 nops + 9 op cycles ~90ns */
     __asm volatile (
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\t"
+        "nop\n\tnop\n\tnop\n\t"
     );
 }
 
 static inline __attribute__((always_inline)) void SLEEP_HALF_CYCLE()
 {
-    /** 67 nops ~500ns */
+    /** 24 nops ~180ns */
     __asm volatile (
         "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
         "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
-        "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+        "nop\n\tnop\n\tnop\n\tnop\n\t"
     );
 }
 
@@ -456,12 +451,19 @@ reset:
         addr = v & 0xFF;
         is_read = v & (1<<RW_PIN);
         /** at least 9 cycles past since page switching */
-        /** wait for address page switching 74HC157@2V 145ns, @4.5V 29ns, @3.3V ?ns */
+        /** 
+         * wait for address page switching 
+         * 74HC157@2V 145ns, @4.5V 29ns, @3.3V should <87ns 
+         */
         SLEEP_WAIT_FOR_PAGE_CHANGE(); 
         /** read second addr page */   
         v = gpio_get_all();
         addr = addr | ((v&0xFF) << 8);
-        /** handle memory read */
+        /** switch back address page */
+        gpio_clr_mask(1<<ADDR_PAGE_PIN); 
+        /** send clk pos edge */
+        gpio_set_mask(1<<CLK_PIN);
+        /** handle memory read, put data on bus */
         if(is_read)
         {
             gpio_set_dir_out_masked(DATA_PIN_MASK);
@@ -475,13 +477,9 @@ reset:
                 gpio_put_masked(DATA_PIN_MASK,((uint32_t)memory[addr])<<8);
             }
         }
-        /** put operations between data write and clk change for data to be valid */
-        /** switch back address page */
-        gpio_clr_mask(1<<ADDR_PAGE_PIN); 
-        /** send clk pos edge */
-        gpio_set_mask(1<<CLK_PIN);
+        /** If write, CPU writes data to bus during this half cycle */
         SLEEP_HALF_CYCLE();
-        /** handle memory write */
+        /** handle memory write, read data from bus */
         if(is_read==0)
         {
             v = gpio_get_all();
@@ -499,6 +497,7 @@ reset:
         }
         /** send clk neg edge */
         gpio_clr_mask(1<<CLK_PIN);
+        /** If read, CPU reads data from bus during this half cycle */
         SLEEP_HALF_CYCLE();
         /** reset data pin to input */
         gpio_set_dir_in_masked(DATA_PIN_MASK);
