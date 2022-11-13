@@ -33,6 +33,102 @@
 #define CORE1_HAS_ACK       (0x00000100u)
 #define CORE1_HAS_DATA      (0x00000200u)
 
+
+/**
+ * function pre define
+ */
+static void terminal_putchar(uint8_t data ,void* ctx);
+static void memory_task(void);
+
+/**
+ * memory
+ */
+static uint8_t memory[0x10000] = {0};
+
+
+/** task running on core 0 */
+int __not_in_flash_func(main)()
+{
+    stdio_init_all();
+
+    /** init hardware */
+    {
+        /** set address and data to inputs */
+        gpio_init_mask(ADDR_PIN_MASK|DATA_PIN_MASK);
+        gpio_set_dir_masked(ADDR_PIN_MASK|DATA_PIN_MASK,0);
+        /** set rw to input */
+        gpio_init(RW_PIN);
+        gpio_set_dir(RW_PIN,false);
+        /** set CLK to 0 */
+        gpio_init(CLK_PIN);
+        gpio_set_dir(CLK_PIN,true);
+        gpio_put(CLK_PIN,0);
+        /** set IRQ to 1 */
+        gpio_init(IRQ_PIN);
+        gpio_set_dir(IRQ_PIN,true);
+        gpio_put(IRQ_PIN,1);
+        /** set NMI to 1 */
+        gpio_init(NMI_PIN);
+        gpio_set_dir(NMI_PIN,true);
+        gpio_put(NMI_PIN,1);
+        /** set RST to 1 */
+        gpio_init(RST_PIN);
+        gpio_set_dir(RST_PIN,true);
+        gpio_put(RST_PIN,1);
+        /** set address page to 0 */
+        gpio_init(ADDR_PAGE_PIN);
+        gpio_set_dir(ADDR_PAGE_PIN,true);
+        gpio_set_slew_rate(ADDR_PAGE_PIN,GPIO_SLEW_RATE_FAST);
+        gpio_put(ADDR_PAGE_PIN,0);
+        /** set button pin to input pull up */
+        gpio_init(BUTTON_PIN);
+        gpio_set_dir(BUTTON_PIN,false);
+        gpio_pull_up(BUTTON_PIN);
+    }
+    printf("6502 CPU starting...\n");
+
+    /** start memory task on core 1 */
+    multicore_launch_core1(memory_task);
+    /** handle IO */
+    for(;;)
+    {
+        /** check message from core 1 (terminal output) */
+        bool has_ack = false;
+        if(sio_hw->fifo_st & SIO_FIFO_ST_VLD_BITS)
+        {
+            uint32_t core1_data =  sio_hw->fifo_rd;
+            core1_data &= 0x3F;
+            int c_out = (core1_data==0x0D)?'\n':(core1_data&0x20)?core1_data:core1_data+0x40;
+            printf("%c",c_out);
+            has_ack = true;
+        }
+        /** check stdin input */
+        int c_in = getchar_timeout_us(0);
+        if(c_in >= 0)
+        {
+            /** convert to higher case */
+            if(c_in>='a'&&c_in<='z')
+                c_in = c_in - ('a'-'A');
+            /** keyboard interface always set bit 7 to 1 */
+            c_in = c_in | 0x80;
+        }
+        /** send message to core 1 if any */
+        if(has_ack || (c_in >= 0))
+        {
+            /** has message to send */
+            uint32_t message = 0;
+            if(has_ack)
+                message |= CORE1_HAS_ACK;
+            if(c_in>=0)
+                message |= CORE1_HAS_DATA | (c_in & CORE1_DATA_MASK);
+            sio_hw->fifo_wr = message;
+        }
+    }
+
+    return 0;
+}
+
+
 /**
  * 6821 fast implementation
  */
@@ -290,103 +386,6 @@ static inline __attribute__((always_inline)) void SLEEP_HALF_CYCLE()
     );
 }
 
-/**
- * function pre define
- */
-static void terminal_putchar(uint8_t data ,void* ctx);
-static void memory_task(void);
-
-/**
- * memory
- */
-static uint8_t memory[0x10000] = {0};
-
-
-/** task running on core 0 */
-int __not_in_flash_func(main)()
-{
-    stdio_init_all();
-
-    /** init hardware */
-    {
-        /** set address and data to inputs */
-        gpio_init_mask(ADDR_PIN_MASK|DATA_PIN_MASK);
-        gpio_set_dir_masked(ADDR_PIN_MASK|DATA_PIN_MASK,0);
-        /** set rw to input */
-        gpio_init(RW_PIN);
-        gpio_set_dir(RW_PIN,false);
-        /** set CLK to 0 */
-        gpio_init(CLK_PIN);
-        gpio_set_dir(CLK_PIN,true);
-        gpio_put(CLK_PIN,0);
-        /** set IRQ to 1 */
-        gpio_init(IRQ_PIN);
-        gpio_set_dir(IRQ_PIN,true);
-        gpio_put(IRQ_PIN,1);
-        /** set NMI to 1 */
-        gpio_init(NMI_PIN);
-        gpio_set_dir(NMI_PIN,true);
-        gpio_put(NMI_PIN,1);
-        /** set RST to 1 */
-        gpio_init(RST_PIN);
-        gpio_set_dir(RST_PIN,true);
-        gpio_put(RST_PIN,1);
-        /** set address page to 0 */
-        gpio_init(ADDR_PAGE_PIN);
-        gpio_set_dir(ADDR_PAGE_PIN,true);
-        gpio_set_slew_rate(ADDR_PAGE_PIN,GPIO_SLEW_RATE_FAST);
-        gpio_put(ADDR_PAGE_PIN,0);
-        /** set button pin to input pull up */
-        gpio_init(BUTTON_PIN);
-        gpio_set_dir(BUTTON_PIN,false);
-        gpio_pull_up(BUTTON_PIN);
-    }
-    printf("6502 CPU starting...\n");
-
-    /** start memory task on core 1 */
-    multicore_launch_core1(memory_task);
-    /** handle IO */
-    for(;;)
-    {
-        /** check message from core 1 (terminal output) */
-        bool has_ack = false;
-        if(sio_hw->fifo_st & SIO_FIFO_ST_VLD_BITS)
-        {
-            uint32_t core1_data =  sio_hw->fifo_rd;
-            core1_data &= 0x3F;
-            int c_out = (core1_data==0x0D)?'\n':(core1_data&0x20)?core1_data:core1_data+0x40;
-            printf("%c",c_out);
-            has_ack = true;
-        }
-        /** check stdin input */
-        int c_in = getchar_timeout_us(0);
-        if(c_in >= 0)
-        {
-            /** convert to higher case */
-            if(c_in>='a'&&c_in<='z')
-                c_in = c_in - ('a'-'A');
-            /** keyboard interface always set bit 7 to 1 */
-            c_in = c_in | 0x80;
-        }
-        /** send message to core 1 if any */
-        if(has_ack || (c_in >= 0))
-        {
-            /** has message to send */
-            uint32_t message = 0;
-            if(has_ack)
-                message |= CORE1_HAS_ACK;
-            if(c_in>=0)
-                message |= CORE1_HAS_DATA | (c_in & CORE1_DATA_MASK);
-            sio_hw->fifo_wr = message;
-            __asm volatile ("sev");
-        }
-    }
-
-    return 0;
-}
-
-
-
 /** 
  * task running on core 1
  *  - RAM
@@ -513,6 +512,5 @@ static void __not_in_flash_func(terminal_putchar)(uint8_t data ,void* ctx)
 {
     /** send data to core 0 */
     sio_hw->fifo_wr = (uint32_t)data;
-    __asm volatile ("sev");
 }
 
