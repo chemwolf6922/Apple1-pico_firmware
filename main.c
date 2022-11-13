@@ -37,7 +37,7 @@
 /**
  * function pre define
  */
-static void terminal_putchar(uint8_t data ,void* ctx);
+static void terminal_putchar(uint8_t data);
 static void memory_task(void);
 
 /**
@@ -148,19 +148,6 @@ typedef struct
 {
     uint8_t data_A;
     uint8_t direction_A;
-    uint8_t contorl_A;
-    uint8_t data_B;
-    uint8_t direction_B;
-    uint8_t contorl_B;
-} e6821_reg_dump_t;
-
-typedef void(*e6821_output_to_device_t)(uint8_t data ,void* ctx);
-
-/** 6821_fast implementation */
-typedef struct
-{
-    uint8_t data_A;
-    uint8_t direction_A;
     union
     {
         struct {
@@ -192,54 +179,35 @@ typedef struct
         } __attribute__((packed)) bits;
         uint8_t byte; 
     } control_B;
-
-    struct
-    {
-        e6821_output_to_device_t write_to_device_A;
-        void* ctx_A;
-        e6821_output_to_device_t write_to_device_B;
-        void* ctx_B;
-    } callbacks;
 } e6821_t;
+
+/**
+ * User should implement both
+ */
+static inline void e6821_write_to_device_A(uint8_t data);
+static inline void e6821_write_to_device_B(uint8_t data);
 
 static e6821_t e6821 = {0};
 
-static inline __attribute__((always_inline)) void e6821_reset()
+static inline void __force_inline e6821_reset()
 {
     memset(&e6821,0,sizeof(e6821));
-}
-
-static inline __attribute__((always_inline)) void e6821_set_device_hook(e6821_port_t port, e6821_output_to_device_t write_to_device, void* ctx)
-{
-    if(port == E6821_PORT_A)
-    {
-        e6821.callbacks.write_to_device_A = write_to_device;
-        e6821.callbacks.ctx_A = ctx;
-    }
-    else if(port == E6821_PORT_B)
-    {
-        e6821.callbacks.write_to_device_B = write_to_device;
-        e6821.callbacks.ctx_B = ctx;
-    }
 }
 
 /**
  * @param rs bit1: rs1, bit0: rs0
  * @param data data
  */
-static inline __attribute__((always_inline)) void e6821_write(int rs, uint8_t data)
+static inline void __force_inline e6821_write(uint16_t rs, uint8_t data)
 {
-    switch (rs)
+    switch (rs&0b11)
     {
     case 0b00:{
-        if(e6821.control_A.bits.DDR_access)
+        if(__builtin_expect(e6821.control_A.bits.DDR_access,1))
         {
             /** data A */
             e6821.data_A = (data & e6821.direction_A) | (e6821.data_A & (~e6821.direction_A));
-            if(e6821.callbacks.write_to_device_A)
-            {
-                e6821.callbacks.write_to_device_A(data,e6821.callbacks.ctx_A);
-            }
+            e6821_write_to_device_A(data & e6821.direction_A);
         }
         else
         {
@@ -251,14 +219,11 @@ static inline __attribute__((always_inline)) void e6821_write(int rs, uint8_t da
         e6821.control_A.byte = data;
     } break;
     case 0b10:{
-        if(e6821.control_B.bits.DDR_access)
+        if(__builtin_expect(e6821.control_B.bits.DDR_access,1))
         {
             /** data B */
             e6821.data_B = (data & e6821.direction_B) | (e6821.data_B & (~e6821.direction_B));
-            if(e6821.callbacks.write_to_device_B)
-            {
-                e6821.callbacks.write_to_device_B(data,e6821.callbacks.ctx_B);
-            }
+            e6821_write_to_device_B(data & e6821.direction_B);
         }
         else
         {
@@ -277,12 +242,12 @@ static inline __attribute__((always_inline)) void e6821_write(int rs, uint8_t da
 /**
  * @param rs bit1: rs1, bit0: rs0
  */
-static inline __attribute__((always_inline)) uint8_t e6821_read(int rs)
+static inline uint8_t __force_inline e6821_read(uint16_t rs)
 {
-    switch (rs)
+    switch (rs&0b11)
     {
     case 0b00:{
-        if(e6821.control_A.bits.DDR_access)
+        if(__builtin_expect(e6821.control_A.bits.DDR_access,1))
         {
             /** data A */
             e6821.control_A.bits.IRQ1 = 0;
@@ -300,7 +265,7 @@ static inline __attribute__((always_inline)) uint8_t e6821_read(int rs)
         return e6821.control_A.byte;
     } break;
     case 0b10:{
-        if(e6821.control_B.bits.DDR_access)
+        if(__builtin_expect(e6821.control_B.bits.DDR_access,1))
         {
             /** data B */
             e6821.control_B.bits.IRQ1 = 0;
@@ -322,7 +287,7 @@ static inline __attribute__((always_inline)) uint8_t e6821_read(int rs)
     }
 }
 
-static inline __attribute__((always_inline)) void e6821_input_from_device(e6821_port_t port, uint8_t data)
+static inline void __force_inline e6821_input_from_device(e6821_port_t port, uint8_t data)
 {
     if(port == E6821_PORT_A)
     {
@@ -333,8 +298,17 @@ static inline __attribute__((always_inline)) void e6821_input_from_device(e6821_
         e6821.data_B = (data & (~e6821.direction_B)) | (e6821.data_B & e6821.direction_B);
     }
 }
+static inline void __force_inline e6821_input_from_device_portA(uint8_t data)
+{
+    e6821.data_A = (data & (~e6821.direction_A)) | (e6821.data_A & e6821.direction_A);
+}
+static inline void __force_inline e6821_input_from_device_portB(uint8_t data)
+{
+    e6821.data_B = (data & (~e6821.direction_B)) | (e6821.data_B & e6821.direction_B);
+}
 
-static inline __attribute__((always_inline)) void e6821_set_irq(e6821_port_t port, e6821_irq_line_t line)
+
+static inline void __force_inline e6821_set_irq(e6821_port_t port, e6821_irq_line_t line)
 {
     if(port == E6821_PORT_A)
     {
@@ -359,11 +333,31 @@ static inline __attribute__((always_inline)) void e6821_set_irq(e6821_port_t por
         }
     }
 }
+static inline void __force_inline e6821_set_irq_portA_line1()
+{
+    e6821.control_A.bits.IRQ1 = 1;
+}
+static inline void __force_inline e6821_set_irq_portA_line2()
+{
+    if(e6821.control_A.bits.C2_output == 0)
+        e6821.control_A.bits.IRQ2 = 1;
+}
+static inline void __force_inline e6821_set_irq_portB_line1()
+{
+    e6821.control_B.bits.IRQ1 = 1;
+}
+static inline void __force_inline e6821_set_irq_portB_line2()
+{
+    if(e6821.control_B.bits.C2_output == 0)
+         e6821.control_B.bits.IRQ2 = 1;
+}
+
+
 
 /**
  * Simple (higher resolution) sleep function 
  */
-static inline __attribute__((always_inline)) void SLEEP_WAIT_FOR_PAGE_CHANGE()
+static inline void __force_inline SLEEP_WAIT_FOR_PAGE_CHANGE()
 {
     /** 3 nops + 9 op cycles ~90ns */
     __asm volatile (
@@ -371,7 +365,7 @@ static inline __attribute__((always_inline)) void SLEEP_WAIT_FOR_PAGE_CHANGE()
     );
 }
 
-static inline __attribute__((always_inline)) void SLEEP_HALF_CYCLE()
+static inline void __force_inline SLEEP_HALF_CYCLE()
 {
     /** 24 nops ~180ns */
     __asm volatile (
@@ -404,7 +398,6 @@ reset:
         }
         /** reset 6821 */
         e6821_reset();
-        e6821_set_device_hook(E6821_PORT_B,terminal_putchar,NULL);
         /** RST -> low */
         gpio_put(RST_PIN,0);
         SLEEP_HALF_CYCLE();
@@ -433,13 +426,13 @@ reset:
             uint32_t core0_data = sio_hw->fifo_rd;
             if(core0_data & CORE1_HAS_DATA)
             {
-                e6821_input_from_device(E6821_PORT_A,core0_data&CORE1_DATA_MASK);
-                e6821_set_irq(E6821_PORT_A,E6821_IRQ_LINE_1);
+                e6821_input_from_device_portA(core0_data&CORE1_DATA_MASK);
+                e6821_set_irq_portA_line1();
             }
             else
             {
                 /** CORE1_HAS_ACK */
-                e6821_input_from_device(E6821_PORT_B,0x00);
+                e6821_input_from_device_portB(0x00);
             }  
         }
         /** check button */
@@ -470,7 +463,7 @@ reset:
             if(__builtin_expect((addr & 0xF000) == 0xD000,0))
             {
                 /** PIA */
-                gpio_put_masked(DATA_PIN_MASK,((uint32_t)e6821_read(addr&0b11))<<8);
+                gpio_put_masked(DATA_PIN_MASK,((uint32_t)e6821_read(addr))<<8);
             }
             else
             {
@@ -487,7 +480,7 @@ reset:
             if(__builtin_expect((addr & 0xF000) == 0xD000,0))
             {
                 /** PIA */
-                e6821_write(addr&0b11,data);
+                e6821_write(addr,data);
             }
             else if(__builtin_expect(addr < 0x8000,1))
             {
@@ -507,9 +500,11 @@ reset:
 /**
  * Callback from core 1
  */
-static void __not_in_flash_func(terminal_putchar)(uint8_t data ,void* ctx)
+static inline void __force_inline e6821_write_to_device_A(uint8_t data)
 {
-    /** send data to core 0 */
+
+}
+static inline void __force_inline e6821_write_to_device_B(uint8_t data)
+{
     sio_hw->fifo_wr = (uint32_t)data;
 }
-
